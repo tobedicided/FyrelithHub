@@ -3,7 +3,7 @@
 getgenv().ScriptKey = getgenv().ScriptKey or ""
 
 -- ใส่ชื่อ Service ให้ตรงกับที่ตั้งไว้บนหน้า Dashboard ของ Panda Development
-local ServiceName = "ใส่ชื่อServiceของคุณที่นี่"
+local ServiceName = "Fyrelith Hub"
 local KeyFileName = "FyrelithHub_Key.txt"
 
 -- URL ไปยัง GitHub ของคุณ (Branch: dist / Folder: dist)
