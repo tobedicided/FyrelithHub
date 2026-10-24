@@ -1,65 +1,63 @@
 -- [[ 1. กำหนดค่าพื้นฐาน ]]
--- หากผู้ใช้ต้องการใส่คีย์ตรงในสคริปต์ สามารถวางในเครื่องหมายคำพูดได้
 getgenv().ScriptKey = getgenv().ScriptKey or ""
-
--- ใส่ชื่อ Service ให้ตรงกับที่ตั้งไว้บนหน้า Dashboard ของ Panda Development
-local ServiceName = "Fyrelith Hub"
 local KeyFileName = "FyrelithHub_Key.txt"
-
--- URL ไปยัง GitHub ของคุณ (Branch: dist / Folder: dist)
 local baseUrl = "https://raw.githubusercontent.com/tobedicided/FyrelithHub/dist/dist/%s.lua"
 
--- [[ 2. ป้องกันการรันสคริปต์ซ้อนกัน ]]
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- ป้องกันการรันซ้ำ
 if getgenv().FyrelithHubLoaded then
     warn("[Fyrelith Hub] สคริปต์กำลังทำงานอยู่แล้ว")
     return
 end
 getgenv().FyrelithHubLoaded = true
 
--- [[ 3. อ้างอิง Services และโหลดไลบรารี PandaAuth ]]
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
-local successLib, PandaAuth = pcall(function()
-    return loadstring(game:HttpGet("https://pandadevelopment.net/service_api/PandaLib.lua"))()
+-- [[ 2. โหลด PandaAuth PUSL-V4 ]]
+local fetchLibSuccess, PUSL = pcall(function()
+    return loadstring(game:HttpGet("https://secure.pandauth.com/pv4/lib"))()
 end)
 
-if not successLib or not PandaAuth then
-    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ตรวจสอบคีย์ได้\nกรุณาลองใหม่อีกครั้งในภายหลัง")
+if not fetchLibSuccess or not PUSL or type(PUSL.configure) ~= "function" then
+    getgenv().FyrelithHubLoaded = false
+    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nไม่สามารถโหลด Library ตรวจสอบคีย์ได้\nกรุณาลองใหม่อีกครั้งในภายหลัง")
     return
 end
 
--- ฟังก์ชันอ่านคีย์ที่เคยเซฟไว้ในโฟลเดอร์ Workspace ของ Executor
+-- ตั้งค่า Service ตาม Dashboard
+PUSL.configure({
+    serviceId = "fyrelithhub",
+})
+
+-- [[ 3. ฟังก์ชันอ่านและบันทึกคีย์ลงเครื่อง ]]
 local function GetSavedKey()
     if isfile and isfile(KeyFileName) then
         local content = readfile(KeyFileName)
         if content and #content > 0 then
-            return content:gsub("%s+", "") -- ตัดช่องว่างออก
+            return content:gsub("%s+", "")
         end
     end
     return ""
 end
 
--- ฟังก์ชันบันทึกคีย์ลงเครื่อง
 local function SaveKey(key)
     if writefile and key and key ~= "" then
         writefile(KeyFileName, key)
     end
 end
 
--- [[ 4. ฟังก์ชันหลักสำหรับดึงสคริปต์ตามแมพ ]]
+-- [[ 4. ฟังก์ชันเริ่มรันสคริปต์ตามแมพ ]]
 local function LaunchHub()
     local placeId = game.PlaceId
     local targetUrl = string.format(baseUrl, tostring(placeId))
 
-    -- แสดงการแจ้งเตือนในเกม
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title = "Fyrelith Hub",
-        Text = "ยืนยันคีย์สำเร็จ! กำลังโหลดสคริปต์...",
+        Text = "ยืนยันคีย์สำเร็จ! กำลังโหลดแมพ...",
         Duration = 5
     })
 
-    -- พยายามดาวน์โหลดสคริปต์ตาม PlaceId
+    -- ดึงโค้ดตาม PlaceId
     local fetchSuccess, scriptContent = pcall(function()
         return game:HttpGet(targetUrl)
     end)
@@ -68,50 +66,42 @@ local function LaunchHub()
         local runSuccess, runError = pcall(function()
             loadstring(scriptContent)()
         end)
-        
         if not runSuccess then
-            warn("[Fyrelith Hub] เกิดข้อผิดพลาดขณะรันสคริปต์แมพ:", runError)
+            warn("[Fyrelith Hub] Error ขณะรันโค้ดแมพ:", runError)
         end
     else
-        -- หากไม่มีไฟล์ของ PlaceId นั้น ให้โหลด universal.lua
+        -- ถ้าไม่มีแมพเฉพาะ ให้ดึงตัว universal
         local fallbackUrl = string.format(baseUrl, "universal")
         local fallbackSuccess, fallbackContent = pcall(function()
             return game:HttpGet(fallbackUrl)
         end)
-
         if fallbackSuccess and fallbackContent and not fallbackContent:find("404: Not Found") then
             loadstring(fallbackContent)()
         else
-            warn("[Fyrelith Hub] ไม่พบสคริปต์เฉพาะของแมพนี้ และไม่พบไฟล์ universal.lua")
+            warn("[Fyrelith Hub] ไม่พบสคริปต์สำหรับ PlaceId นี้ และไม่พบ universal.lua")
         end
     end
 end
 
--- [[ 5. ตรวจสอบคีย์และเริ่มการทำงาน ]]
+-- [[ 5. ตรวจสอบคีย์ ]]
 local currentKey = (getgenv().ScriptKey ~= "" and getgenv().ScriptKey) or GetSavedKey()
 
--- กรณีที่ไม่มีคีย์เลย
 if currentKey == "" then
     getgenv().FyrelithHubLoaded = false
-    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nไม่พบคีย์การใช้งาน\nกรุณาใส่คีย์ใน getgenv().ScriptKey ก่อนสั่งรันสคริปต์")
+    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nไม่พบคีย์การใช้งาน\nกรุณาใส่คีย์ใน getgenv().ScriptKey ก่อนสั่งรัน")
     return
 end
 
--- ยืนยันความถูกต้องของคีย์กับเซิร์ฟเวอร์ PandaAuth
-local isValid = false
-local checkSuccess, checkResult = pcall(function()
-    return PandaAuth:ValidateKey(ServiceName, currentKey)
+-- ตรวจสอบคีย์ผ่าน PUSL.validate
+local validateSuccess, result = pcall(function()
+    return PUSL.validate(currentKey)
 end)
 
-if checkSuccess and checkResult then
-    isValid = true
-end
-
-if isValid then
-    SaveKey(currentKey) -- เซฟคีย์ที่ถูกต้องไว้ในเครื่องเพื่อไม่ต้องกรอกใหม่ในรอบถัดไป
+if validateSuccess and result and result.success then
+    SaveKey(currentKey) -- เซฟคีย์ลงเครื่องเมื่อผ่าน
     LaunchHub()
 else
     getgenv().FyrelithHubLoaded = false
-    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nคีย์ไม่ถูกต้อง หรือหมดอายุการใช้งานแล้ว\nกรุณาติดต่อร้านค้าเพื่อรับหรือต่ออายุคีย์")
+    LocalPlayer:Kick("\n\n[Fyrelith Hub]\nคีย์ไม่ถูกต้อง หรือหมดอายุการใช้งานแล้ว\nกรุณาติดต่อร้านค้าเพื่อต่ออายุคีย์")
     return
 end
