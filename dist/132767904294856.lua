@@ -216,7 +216,7 @@ if previousFarm and type(previousFarm.closeHalloweenShop)=="function" then pcall
 if previousFarm and type(previousFarm.saveConfig)=="function" then pcall(previousFarm.saveConfig) end
 if G.BlueFarm then G.BlueFarm.running=false end
 do local previousGui=bootParent:FindFirstChild("BlueFarmControls") if previousGui then previousGui:Destroy() end end
-local S={version="dashboard-174-config-epoch2-reset",running=true,enabled=true,cycles=0,opened=0,bought=0,sold=0,errors=0,lastError="",strikerUpgrades=0,luckUpgrades=0,placed=0,waitingBoxes=0,baseSwaps=0,gameUpgrades=0}
+local S={version="dashboard-175-auto-resume-travel",running=true,enabled=true,cycles=0,opened=0,bought=0,sold=0,errors=0,lastError="",strikerUpgrades=0,luckUpgrades=0,placed=0,waitingBoxes=0,baseSwaps=0,gameUpgrades=0}
 G.BlueFarm=S
 do
 local deviceInput=game:GetService("UserInputService")
@@ -318,6 +318,20 @@ local US=require(RS.Shared.Services.UpgradesService)
 local C=require(RS.Client.Core.ConveyorRollClient)
 local X={sellSpareStrikers=false,polisher=false,luckPotion=false,cashPotion=false,speedPotion=false,bluetooth=false,market=false,skinBuy=false,skinEquip=false,grade=false,trait=false,tower=false,events=false,obby=false,esp=false,upgrades=false,rewards=false,fastOpen=false,rollLimit=20,gradeTarget=3,traitTarget=1.5,spendPercent=10,reserveCash=0,towerName="FirstSelection"}
 S.options=X
+-- An explicit function/mode selection starts a new travel attempt immediately.
+S.resumeTravel=function()
+ S.travelSuspended=false S.travelSuspendReason=nil
+ S.travelResumeSample=nil S.collectionRecoveries=0 S.halloweenRecovery=nil
+ local ledger=G.BlueFarmHalloweenNightLedger
+ if ledger then ledger.recoveries=0 end
+end
+S.selectTravelMode=function(mode)
+ if mode~="TP" and mode~="Tween" then return end
+ local changed=X.collectMode~=mode
+ X.collectMode=mode
+ if changed and S.cancelSharedTravel then S.cancelSharedTravel() end
+ S.resumeTravel()
+end
 X.noRollLimit=false
 X.autoObby=false
 X.strikerUpgrade=false
@@ -1136,6 +1150,7 @@ local function toggle(parent,key,title,description,owner)
  local function refresh() state.BackgroundColor3=owner[key] and blue or Color3.fromRGB(44,39,62) thumb.Position=UDim2.fromOffset(owner[key] and 21 or 3,3) end
  row.Activated:Connect(function()
  owner[key]=not owner[key]
+ if owner==X and owner[key]==true and ({mapCollect=true,events=true,halloween=true,autoGrave=true,autoObby=true,grade=true,trait=true,halloweenCorn=true,halloweenBags=true,graveCollect=true})[key] then S.resumeTravel() end
  if owner==X and key=="autoGrave" and owner[key] and S.requestGraveSelection and (X.graveUnit=="" or not S.graveCandidateAllowed(X.graveUnit)) then S.requestGraveSelection() end
  if owner==X and S.potionConsent[key]~=nil then S.potionConsent[key]=owner[key]==true end
  refresh()
@@ -1714,7 +1729,7 @@ local collectModes=make("Frame",S.travelPage,{Name="TravelModes",Size=UDim2.new(
 local modeButtons={}
 for i,name in {"TP","Tween"} do
  local b=make("TextButton",collectModes,{Name=name,Position=UDim2.new((i-1)/2,0,0,0),Size=UDim2.new(0.5,-5,0,36),Text=name,Font=Enum.Font.GothamBold,TextSize=14,TextColor3=blue,BackgroundColor3=Color3.fromRGB(17,28,42),BorderSizePixel=0}) round(b,6)
- modeButtons[name]=b b.Activated:Connect(function()X.collectMode=name end)
+ modeButtons[name]=b b.Activated:Connect(function()S.selectTravelMode(name) end)
 end
 local tweenSpeedField=make("Frame",collectModes,{Name="TweenSpeed",Position=UDim2.fromOffset(0,44),Size=UDim2.new(1,-6,0,82),BackgroundTransparency=1})
 do
@@ -1794,7 +1809,7 @@ note(S.travelPage,"Safe-ground checks and server cooldowns remain active. Emerge
 S.travelAuditInfo=label(S.travelPage,"Travel diagnostics: waiting",100)
 S.travelAuditInfo.Name="TravelAuditStatus"
 action(S.travelPage,"Save Travel Diagnostics",function()if S.saveTravelAudit then S.saveTravelAudit() end end)
-action(S.travelPage,"Resume paused travel",function()S.travelSuspended=false S.travelSuspendReason=nil end)
+action(S.travelPage,"Resume paused travel",function()S.resumeTravel() end)
 
 do
  S.itemCatalog={} S.variantCatalog={}
@@ -4361,6 +4376,32 @@ S.checkCollectionGround=function(pos)
  local char=P.Character local root=char and char:FindFirstChild("HumanoidRootPart") local human=char and char:FindFirstChildOfClass("Humanoid")
  return root and human and safeStanding(pos,char,human,root) or nil
 end
+-- Retry automatically once the character has regained stable ground.
+-- Keep the existing route blocks so a failed destination is skipped.
+task.spawn(function()
+ while alive() do
+  if S.travelSuspended and S.enabled then
+   local char=P.Character
+   local root=char and char:FindFirstChild("HumanoidRootPart")
+   local human=char and char:FindFirstChildOfClass("Humanoid")
+   local ready=root and human and human.Health>0 and not root.Anchored and not human.Sit
+    and not S.sharedTravelActive and not S.tpReturnActive and not S.trainingTravel
+    and not S.obbyTravel and not S.halloweenTravel and not S.graveTravel
+    and not manualControl() and safeStanding(root.Position,char,human,root)
+   if ready then
+    local sample=S.travelResumeSample
+    if not sample or sample.character~=char or (sample.position-root.Position).Magnitude>1 then
+     S.travelResumeSample={character=char,position=root.Position,at=os.clock()}
+    elseif os.clock()-sample.at>=1 then
+     S.travelSuspended=false S.travelSuspendReason=nil S.halloweenRecovery=nil
+     S.travelResumeSample=nil
+    end
+   else S.travelResumeSample=nil end
+  else S.travelResumeSample=nil end
+  task.wait(0.25)
+ end
+end)
+
 -- Shared normal travel for Training, Obby and collection returns.
 -- Recovery from unsupported ground intentionally keeps its immediate safe return.
 do
@@ -7749,9 +7790,9 @@ for _,name in ipairs({'TP','Tween'}) do
  for _,signal in ipairs({button.Activated,button.MouseButton1Click}) do for _,c in ipairs(getconnections(signal)) do c:Disconnect() end end
  -- Start on press, so touch and mouse both respond before release.
  button.InputBegan:Connect(function(input)
-  if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then S.options.collectMode=name refresh() end
+  if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then S.selectTravelMode(name) refresh() end
  end)
- button.Activated:Connect(function() S.options.collectMode=name refresh() end)
+ button.Activated:Connect(function() S.selectTravelMode(name) refresh() end)
 end
 refresh()
 u.instantTravelMode=true
