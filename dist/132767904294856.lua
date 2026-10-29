@@ -457,13 +457,13 @@ local function readSettings(path)
  return nil
 end
 -- Epoch 2 is a clean baseline. Never import a previous config generation.
-local CONFIG_EPOCH=2
+S.configEpoch=2
 configPath="Fyrelith_Black_Config_Epoch2_"..tostring(game.PlaceId).."_"..tostring(P.UserId)..(S.auditMode and "_Audit" or "")..".json"
 configState.file=configPath
 G.BlueFarmConfigSessions=G.BlueFarmConfigSessions or {}
 do
  local current=readSettings(configPath) or G.BlueFarmConfigSessions[configPath]
- local reset=not validEnvelope(current) or current.freshStartVersion~=CONFIG_EPOCH
+ local reset=not validEnvelope(current) or current.freshStartVersion~=S.configEpoch
  S.legacyCleanup={reset=reset,removed=0,failed={},pending=false}
  if reset or current.cleanupPending then
   local seen={}
@@ -2338,7 +2338,7 @@ local function copySettings()
  local conveyor={}
  for _,key in {"autoBuy","spawnBestLocker","warnings","variantFilter","autoSellLockers"} do conveyor[key]=config[key] end
  conveyor.variants=table.clone(config.variants) conveyor.boxes=table.clone(config.boxes)
- return {schema=1,freshStartVersion=CONFIG_EPOCH,cleanupPending=S.legacyCleanup and S.legacyCleanup.pending or false,placeId=game.PlaceId,userId=P.UserId,deviceId=S.device.id,enabled=S.enabled,language=G.BlueFarmLanguage or "th",options=options,conveyor=conveyor,ui={x=panel.Position.X.Offset,y=panel.Position.Y.Offset,minimized=minimized,width=panel.Size.X.Offset,height=panel.Size.Y.Offset}}
+ return {schema=1,freshStartVersion=S.configEpoch,cleanupPending=S.legacyCleanup and S.legacyCleanup.pending or false,placeId=game.PlaceId,userId=P.UserId,deviceId=S.device.id,enabled=S.enabled,language=G.BlueFarmLanguage or "th",options=options,conveyor=conveyor,ui={x=panel.Position.X.Offset,y=panel.Position.Y.Offset,minimized=minimized,width=panel.Size.X.Offset,height=panel.Size.Y.Offset}}
 end
 local function canonical(value)
  if type(value)~="table" then return http:JSONEncode(value) end
