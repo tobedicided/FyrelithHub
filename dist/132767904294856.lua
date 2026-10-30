@@ -216,7 +216,7 @@ if previousFarm and type(previousFarm.closeHalloweenShop)=="function" then pcall
 if previousFarm and type(previousFarm.saveConfig)=="function" then pcall(previousFarm.saveConfig) end
 if G.BlueFarm then G.BlueFarm.running=false end
 do local previousGui=bootParent:FindFirstChild("BlueFarmControls") if previousGui then previousGui:Destroy() end end
-local S={version="dashboard-175-auto-resume-travel",running=true,enabled=true,cycles=0,opened=0,bought=0,sold=0,errors=0,lastError="",strikerUpgrades=0,luckUpgrades=0,placed=0,waitingBoxes=0,baseSwaps=0,gameUpgrades=0}
+local S={version="dashboard-182-exclusive-polisher-sales",running=true,enabled=true,cycles=0,opened=0,bought=0,sold=0,errors=0,lastError="",strikerUpgrades=0,luckUpgrades=0,placed=0,waitingBoxes=0,baseSwaps=0,gameUpgrades=0}
 G.BlueFarm=S
 do
 local deviceInput=game:GetService("UserInputService")
@@ -318,20 +318,6 @@ local US=require(RS.Shared.Services.UpgradesService)
 local C=require(RS.Client.Core.ConveyorRollClient)
 local X={sellSpareStrikers=false,polisher=false,luckPotion=false,cashPotion=false,speedPotion=false,bluetooth=false,market=false,skinBuy=false,skinEquip=false,grade=false,trait=false,tower=false,events=false,obby=false,esp=false,upgrades=false,rewards=false,fastOpen=false,rollLimit=20,gradeTarget=3,traitTarget=1.5,spendPercent=10,reserveCash=0,towerName="FirstSelection"}
 S.options=X
--- An explicit function/mode selection starts a new travel attempt immediately.
-S.resumeTravel=function()
- S.travelSuspended=false S.travelSuspendReason=nil
- S.travelResumeSample=nil S.collectionRecoveries=0 S.halloweenRecovery=nil
- local ledger=G.BlueFarmHalloweenNightLedger
- if ledger then ledger.recoveries=0 end
-end
-S.selectTravelMode=function(mode)
- if mode~="TP" and mode~="Tween" then return end
- local changed=X.collectMode~=mode
- X.collectMode=mode
- if changed and S.cancelSharedTravel then S.cancelSharedTravel() end
- S.resumeTravel()
-end
 X.noRollLimit=false
 X.autoObby=false
 X.strikerUpgrade=false
@@ -345,6 +331,8 @@ X.gradeCash=false
 X.mapCollect=false
 X.autoSellCrates=false
 X.autoSellPolishedCrates=false
+X.polisherGoldenHourOnly=false
+X.polisherPickupDelay=0
 X.graveESP=false
 X.autoGrave=false
 X.graveCollect=true
@@ -456,81 +444,46 @@ local function readSettings(path)
  if decoded and validEnvelope(value) then return value end
  return nil
 end
--- Epoch 2 is a clean baseline. Never import a previous config generation.
-S.configEpoch=2
-configPath="Fyrelith_Black_Config_Epoch2_"..tostring(game.PlaceId).."_"..tostring(P.UserId)..(S.auditMode and "_Audit" or "")..".json"
-configState.file=configPath
 G.BlueFarmConfigSessions=G.BlueFarmConfigSessions or {}
 do
- local current=readSettings(configPath) or G.BlueFarmConfigSessions[configPath]
- local reset=not validEnvelope(current) or current.freshStartVersion~=S.configEpoch
+ local current=readSettings(configPath)
+ local reset=not current or current.freshStartVersion~=1
  S.legacyCleanup={reset=reset,removed=0,failed={},pending=false}
  if reset or current.cleanupPending then
-  local seen={}
-  local function fail(path,err)
-   table.insert(S.legacyCleanup.failed,{file=path,error=tostring(err)})
+  local names={"Fyrelith_Device.json","Fyrelith_Travel_Audit.json","Fyrelith_Original_258f87eab02e.png","fyrelith-logo.png","fyrelith-background.png","fyrelith-color-wheel.png"}
+  for _,name in {"Overview","Farm","Boosts","Market","Training","Tower","Events","Travel","Setting"} do
+   table.insert(names,"fyrelith-icon-"..name..".png") table.insert(names,"fyrelith-lucide-"..name..".png")
   end
-  local function legacyConfig(path)
-   local name=path:gsub("\\","/"):match("([^/]+)$")
-   if not name then return false end
-   name=name:lower()
-   -- Preserve this generation for every account and place, including backups.
-   if name:match("^fyrelith_black_config_epoch2_") then return false end
-   if not (name:match("%.json$") or name:match("%.json%.bak$")) then return false end
-   return (name:match("^fyrelith_black") and name:find("config",1,true))~=nil
-    or (name:match("^bluefarm") and name:find("config",1,true))~=nil
-    or name=="fyrelith_device.json"
-  end
-  local function remove(path)
-   if seen[path] then return end
-   seen[path]=true
-   local ok,err=pcall(function()
-    assert(type(isfile)=="function","Executor cannot inspect config files")
-    if not isfile(path) then return end
-    assert(type(delfile)=="function","Executor cannot delete old configs")
-    delfile(path)
-    assert(not isfile(path),"Old config still exists")
-    S.legacyCleanup.removed+=1
-   end)
-   if not ok then fail(path,err) end
-  end
-  -- listfiles paths are passed through unchanged; inspect executor workspace only.
-  local visited={}
-  local function scan(folder,depth)
-   local key=folder:gsub("\\","/"):gsub("/+$/",""):lower()
-   if visited[key] then return end
-   visited[key]=true
-   local ok,files=pcall(listfiles,folder)
-   if not ok or type(files)~="table" then fail(folder,files) return end
-   for _,path in files do
-    if type(path)=="string" then
-     local directoryOK,directory=pcall(isfolder,path)
-     if not directoryOK then fail(path,directory)
-     elseif directory then
-      if depth<32 then scan(path,depth+1) else fail(path,"Config scan depth exceeded") end
-     elseif legacyConfig(path) then remove(path) end
+  table.insert(names,S.legacyConfigPath) table.insert(names,S.legacyConfigPath..".bak")
+  if reset then table.insert(names,configPath) table.insert(names,configPath..".bak") end
+  if type(listfiles)=="function" then
+   local ok,files=pcall(listfiles,".")
+   if ok then
+    local prefix="Fyrelith_Black_v1_Config_"..tostring(game.PlaceId).."_"..tostring(P.UserId).."_Device_"
+    for _,path in files do
+     local name=path:gsub("\\","/"):match("([^/]+)$")
+     if name and name:sub(1,#prefix)==prefix and (name:sub(-5)==".json" or name:sub(-9)==".json.bak") then table.insert(names,name) end
     end
    end
   end
-  if type(listfiles)=="function" and type(isfolder)=="function" then scan(".",0)
-  else fail(".","Executor cannot scan workspace subfolders") end
-  -- Known root paths are still cleaned if directory listing is unavailable.
-  for _,path in {S.legacyConfigPath,S.legacyConfigPath..".bak",
-   "Fyrelith_Black_Config_"..tostring(game.PlaceId).."_"..tostring(P.UserId)..".json",
-   "Fyrelith_Black_Config_"..tostring(game.PlaceId).."_"..tostring(P.UserId)..".json.bak",
-   "Fyrelith_Device.json"} do remove(path) end
-  for path in G.BlueFarmConfigSessions do
-   if type(path)=="string" and legacyConfig(path) then G.BlueFarmConfigSessions[path]=nil end
+  local seen={}
+  for _,name in names do
+   if not seen[name] then
+    seen[name]=true
+    if type(isfile)=="function" and isfile(name) then
+     local ok,err=pcall(function()assert(type(delfile)=="function","Executor does not support file deletion") delfile(name) assert(not isfile(name),"File still exists")end)
+     if ok then S.legacyCleanup.removed+=1 else table.insert(S.legacyCleanup.failed,{file=name,error=tostring(err)}) end
+    end
+   end
   end
   S.legacyCleanup.pending=#S.legacyCleanup.failed>0
-  if S.legacyCleanup.pending then warn("FYRELITH: some legacy configs could not be removed; cleanup will retry next run") end
  end
  if reset then
-  G.BlueFarmConfigSessions[configPath]=nil
+  G.BlueFarmConfigSessions[configPath]=nil G.BlueFarmConfigSessions[S.legacyConfigPath]=nil
+  -- Do not import any old settings after the one-time reset.
   S.freshStartThisRun=true
  end
 end
-
 local loadedConfig=not S.freshStartThisRun and (readSettings(configPath) or G.BlueFarmConfigSessions[configPath]) or nil
 S.defaultSettings={options={},conveyor={}}
 for key,value in X do S.defaultSettings.options[key]=type(value)=="table" and table.clone(value) or value end
@@ -601,6 +554,18 @@ if validEnvelope(loadedConfig) then
  if type(loadedConfig.ui)=="table" then loadedUI=loadedConfig.ui end
  configState.loaded=true
 end
+-- Migrate older configs that allowed both modes to be enabled.
+if X.polisherGoldenHourOnly then X.autoSellPolishedCrates=false end
+S.polishedSaleRefreshers={}
+S.setPolishedSaleMode=function(key,value)
+ if key~="autoSellPolishedCrates" and key~="polisherGoldenHourOnly" then return end
+ X[key]=value==true
+ if X[key] then
+  local other=key=="autoSellPolishedCrates" and "polisherGoldenHourOnly" or "autoSellPolishedCrates"
+  X[other]=false
+ end
+ for _,refresh in S.polishedSaleRefreshers do refresh() end
+end
 configState.status=configState.loaded and "Config: loaded" or "Config: ready"
 if not X.iconVisibilityConfigured then X.showIcon=true X.iconVisibilityConfigured=true end
 config.autoSpawn=nil
@@ -649,6 +614,34 @@ S.releaseInventory=function(owner)
  if S.inventoryOwner~=owner then return false end
  S.inventoryOwner=nil S.inventoryBusy=false S.inventorySince=nil
  return true
+end
+-- Delay the conveyor pickup, not equipment or deposits already in inventory.
+S.polisherPickupTimers=setmetatable({},{__mode="k"})
+S.polisherPickupAllowed=function(part)
+ local timers=S.polisherPickupTimers
+ local count=tonumber(part:GetAttribute("PendingBallCount")) or 0
+ if count<=0 or not X.polisher or S.polisherAvailable==false or not require(RS.Shared.Services.PolisherService).IsUnlocked(P) then
+  timers[part]=nil S.polisherPickupRemaining=0 return true
+ end
+ local delay=tonumber(X.polisherPickupDelay) or 0
+ if delay~=delay then delay=0 end
+ delay=math.clamp(delay,0,3600)
+ if delay<=0 then timers[part]=nil S.polisherPickupRemaining=0 return true end
+ local now=os.clock() local timer=timers[part]
+ if not timer then timer={at=now} timers[part]=timer end
+ if timer.sentAt then
+  -- Restart the delay only after the game confirms a pickup changed the count.
+  if count<timer.sentCount then timer={at=now} timers[part]=timer
+  elseif now-timer.sentAt<2 then return false
+  else timer.sentAt=nil end
+ end
+ local remaining=math.max(0,delay-(now-timer.at))
+ S.polisherPickupRemaining=remaining
+ return remaining<=0
+end
+S.notePolisherPickup=function(part)
+ local timer=S.polisherPickupTimers[part]
+ if timer then timer.sentAt=os.clock() timer.sentCount=tonumber(part:GetAttribute("PendingBallCount")) or 0 end
 end
 do (function()
  local module=RS.Shared.Services:FindFirstChild("DayNightService")
@@ -1148,9 +1141,11 @@ local function toggle(parent,key,title,description,owner)
  make("UIStroke",state,{Color=Color3.fromRGB(137,120,184),Thickness=1,Transparency=0.55})
  local thumb=make("Frame",state,{Name="Thumb",Size=UDim2.fromOffset(16,16),Position=UDim2.fromOffset(3,3),BackgroundColor3=Color3.fromRGB(240,243,245),BorderSizePixel=0}) round(thumb,6)
  local function refresh() state.BackgroundColor3=owner[key] and blue or Color3.fromRGB(44,39,62) thumb.Position=UDim2.fromOffset(owner[key] and 21 or 3,3) end
+ if owner==X and (key=="autoSellPolishedCrates" or key=="polisherGoldenHourOnly") then S.polishedSaleRefreshers[key]=refresh end
  row.Activated:Connect(function()
- owner[key]=not owner[key]
- if owner==X and owner[key]==true and ({mapCollect=true,events=true,halloween=true,autoGrave=true,autoObby=true,grade=true,trait=true,halloweenCorn=true,halloweenBags=true,graveCollect=true})[key] then S.resumeTravel() end
+ if owner==X and (key=="autoSellPolishedCrates" or key=="polisherGoldenHourOnly") then
+  S.setPolishedSaleMode(key,not owner[key])
+ else owner[key]=not owner[key] end
  if owner==X and key=="autoGrave" and owner[key] and S.requestGraveSelection and (X.graveUnit=="" or not S.graveCandidateAllowed(X.graveUnit)) then S.requestGraveSelection() end
  if owner==X and S.potionConsent[key]~=nil then S.potionConsent[key]=owner[key]==true end
  refresh()
@@ -1424,7 +1419,9 @@ local variants={} for name in require(RS.Shared.Core.Storage.Game.VariantsLibrar
 local boxes={} for name in BL do table.insert(boxes,name) end table.sort(boxes,function(a,b)return BL[a].Index>BL[b].Index end)
 choiceList("VARIANTS",variants,"variants") choiceList("LOCKERS",boxes,"boxes")
 toggle(boost,"polisher","Auto Polisher","Automatically collect conveyor crates and deposit them into your Polisher. Finished crates use Auto Sell Polished Crates.")
-toggle(boost,"autoSellPolishedCrates","Auto Sell Polished Crates","Collect finished crates from the Polisher and sell them. Independent of normal Auto Sell Crate.")
+field(boost,"polisherPickupDelay","Wait before Polisher pickup (seconds)",0,3600).Name="polisherPickupDelay"
+toggle(boost,"autoSellPolishedCrates","Auto Sell Polished Crates","Collect and sell polished crates in any weather. Enabling this turns off Golden Hour Only.")
+toggle(boost,"polisherGoldenHourOnly","Sell Polisher when Golden Hour Only","Collect and sell polished crates only during Golden Hour. Enabling this turns off Auto Sell Polished Crates.")
 note(boost,"Potions start OFF every run. Click each switch to allow use.\nPotion ที่มีบัฟอยู่แล้วจะคงเวลาตามเกม")
 toggle(boost,"luckPotion","Luck Potion","ใช้ 1 ขวดเมื่อบัฟหมด: +1 Luck / 5 นาที")
 toggle(boost,"cashPotion","Cash Potion","ใช้ 1 ขวดเมื่อบัฟหมด: x2 Cash / 5 นาที")
@@ -1729,7 +1726,7 @@ local collectModes=make("Frame",S.travelPage,{Name="TravelModes",Size=UDim2.new(
 local modeButtons={}
 for i,name in {"TP","Tween"} do
  local b=make("TextButton",collectModes,{Name=name,Position=UDim2.new((i-1)/2,0,0,0),Size=UDim2.new(0.5,-5,0,36),Text=name,Font=Enum.Font.GothamBold,TextSize=14,TextColor3=blue,BackgroundColor3=Color3.fromRGB(17,28,42),BorderSizePixel=0}) round(b,6)
- modeButtons[name]=b b.Activated:Connect(function()S.selectTravelMode(name) end)
+ modeButtons[name]=b b.Activated:Connect(function()X.collectMode=name end)
 end
 local tweenSpeedField=make("Frame",collectModes,{Name="TweenSpeed",Position=UDim2.fromOffset(0,44),Size=UDim2.new(1,-6,0,82),BackgroundTransparency=1})
 do
@@ -1809,7 +1806,7 @@ note(S.travelPage,"Safe-ground checks and server cooldowns remain active. Emerge
 S.travelAuditInfo=label(S.travelPage,"Travel diagnostics: waiting",100)
 S.travelAuditInfo.Name="TravelAuditStatus"
 action(S.travelPage,"Save Travel Diagnostics",function()if S.saveTravelAudit then S.saveTravelAudit() end end)
-action(S.travelPage,"Resume paused travel",function()S.resumeTravel() end)
+action(S.travelPage,"Resume paused travel",function()S.travelSuspended=false S.travelSuspendReason=nil S.halloweenRecovery=nil S.travelRecoveryState=nil end)
 
 do
  S.itemCatalog={} S.variantCatalog={}
@@ -1972,7 +1969,7 @@ do (function()
    if key=="autoequip" or key=="strikerupgrade" or key=="sellsparestrikers" or key=="upgrades" then return "Team management" end
    if key=="stopatfilter" or key=="autobuy" or key=="spawnbestlocker" or key=="autoselllockers" or key=="fastopen" or key=="autosellcrates" then return "Locker automation" end
   elseif page=="Boosts" then
-   if key=="polisher" or key=="autosellpolishedcrates" then return "Polisher" end
+   if key=="polisher" or key=="autosellpolishedcrates" or key=="polisherpickupdelay" or key=="polishergoldenhouronly" then return "Polisher" end
    return "Potion permissions"
   elseif page=="Market" then
    return "Inventory & Shop"
@@ -2072,7 +2069,7 @@ do (function()
   local slots=S.baseSlots local inv=S.inventoryCapacity and S.inventoryCapacity()
   metrics[1].Text=slots and ((slots.total-slots.empty).." / "..slots.total) or "—"
   metrics[2].Text=inv and (inv.count.." / "..inv.maximum) or "—"
-  local count=0 for _,key in {"autoEquip","strikerUpgrade","upgrades","polisher","autoSellCrates","autoSellPolishedCrates","skinBuy","skinSell","skinEquip","grade","trait","tower","halloween","autoGrave","mapCollect","events","autoObby","rewards"} do if X[key] then count+=1 end end
+  local count=0 for _,key in {"autoEquip","strikerUpgrade","upgrades","polisher","autoSellCrates","autoSellPolishedCrates","polisherGoldenHourOnly","skinBuy","skinSell","skinEquip","grade","trait","tower","halloween","autoGrave","mapCollect","events","autoObby","rewards"} do if X[key] then count+=1 end end
   if config.autoBuy then count+=1 end if config.spawnBestLocker then count+=1 end if config.autoSellLockers then count+=1 end
   metrics[3].Text=tostring(count) metrics[4].Text=tostring(S.errors)
  end)
@@ -2338,7 +2335,7 @@ local function copySettings()
  local conveyor={}
  for _,key in {"autoBuy","spawnBestLocker","warnings","variantFilter","autoSellLockers"} do conveyor[key]=config[key] end
  conveyor.variants=table.clone(config.variants) conveyor.boxes=table.clone(config.boxes)
- return {schema=1,freshStartVersion=S.configEpoch,cleanupPending=S.legacyCleanup and S.legacyCleanup.pending or false,placeId=game.PlaceId,userId=P.UserId,deviceId=S.device.id,enabled=S.enabled,language=G.BlueFarmLanguage or "th",options=options,conveyor=conveyor,ui={x=panel.Position.X.Offset,y=panel.Position.Y.Offset,minimized=minimized,width=panel.Size.X.Offset,height=panel.Size.Y.Offset}}
+ return {schema=1,freshStartVersion=1,cleanupPending=S.legacyCleanup and S.legacyCleanup.pending or false,placeId=game.PlaceId,userId=P.UserId,deviceId=S.device.id,enabled=S.enabled,language=G.BlueFarmLanguage or "th",options=options,conveyor=conveyor,ui={x=panel.Position.X.Offset,y=panel.Position.Y.Offset,minimized=minimized,width=panel.Size.X.Offset,height=panel.Size.Y.Offset}}
 end
 local function canonical(value)
  if type(value)~="table" then return http:JSONEncode(value) end
@@ -2689,8 +2686,10 @@ task.spawn(function()
  table.insert(connections,collectConnection)
  end
  local now=os.clock()
- if not S.graveOwnsInventory and not S.polisherFinishedWaiting and require(RS.Shared.Services.InventoryService).HasInventorySpace(P,1) and (X.autoSellCrates or S.polisherWantsCrates and S.polisherWantsCrates()) and (part:GetAttribute("PendingBallCount") or 0)>0 and now-pickupAt>=0.4 then
- pickupAt=now R.PickupCrateBox:FireServer(part)
+ local pickupReady=S.polisherPickupAllowed(part)
+ if not pickupReady then S.ballCollectStatus=string.format("Waiting %.1fs before Polisher pickup",S.polisherPickupRemaining or 0) end
+ if pickupReady and not S.graveOwnsInventory and not S.polisherFinishedWaiting and require(RS.Shared.Services.InventoryService).HasInventorySpace(P,1) and (X.autoSellCrates or S.polisherWantsCrates and S.polisherWantsCrates()) and (part:GetAttribute("PendingBallCount") or 0)>0 and now-pickupAt>=0.4 then
+ pickupAt=now S.notePolisherPickup(part) R.PickupCrateBox:FireServer(part)
  end
  local crates=D.GetData().Crates
  for id in crates do
@@ -2712,7 +2711,7 @@ task.spawn(function()
  if S.shinyCrates and S.shinyCrates[id] then S.ballSales.polished+=1 S.shinyCrates[id]=nil end
  else S.ballSales.pending+=1 end
  end
- S.ballCollectStatus=(X.autoSellCrates or X.polisher or X.autoSellPolishedCrates) and not require(RS.Shared.Services.InventoryService).HasInventorySpace(P,1) and ("Cannot pick up balls • "..S.inventoryBlockedMessage()) or not X.autoSellCrates and (S.polisherWantsCrates and S.polisherWantsCrates() and "Feeding Polisher • Normal sales OFF" or "Auto Sell Crate OFF • Waiting for enabled Polisher or manual crates") or S.ballSales.pending>0 and ("Verifying ball sales: "..S.ballSales.pending.." pending • "..S.ballSales.retries.." retries") or ("Ball sales confirmed: "..S.ballSales.confirmed)
+ S.ballCollectStatus=(X.autoSellCrates or X.polisher or X.autoSellPolishedCrates or X.polisherGoldenHourOnly) and not require(RS.Shared.Services.InventoryService).HasInventorySpace(P,1) and ("Cannot pick up balls • "..S.inventoryBlockedMessage()) or not X.autoSellCrates and (S.polisherWantsCrates and S.polisherWantsCrates() and "Feeding Polisher • Normal sales OFF" or "Auto Sell Crate OFF • Waiting for enabled Polisher or manual crates") or S.ballSales.pending>0 and ("Verifying ball sales: "..S.ballSales.pending.." pending • "..S.ballSales.retries.." retries") or ("Ball sales confirmed: "..S.ballSales.confirmed)
  end)
  busy=false
  end
@@ -3237,11 +3236,16 @@ S.isPolishedCrate=function(id)
  if tool:GetAttribute("Shiny")==true then S.shinyCrates[id]=true return true end
  return false
 end
+S.polishedSalesAllowed=function()
+ if not X.polisherGoldenHourOnly then return X.autoSellPolishedCrates==true end
+ local ok,weather=pcall(function()return require(RS.Shared.Services.WeatherService).GetCurrentWeather()end)
+ return ok and weather=="GoldenHour"
+end
 S.canSellCrate=function(id)
  if S.polisherDepositing[id] then return false end
  local polished=S.isPolishedCrate(id)
  if polished==nil then return false end
- if polished then return X.autoSellPolishedCrates==true end
+ if polished then return S.polishedSalesAllowed() end
  return X.autoSellCrates==true and (not S.shouldPolish or not S.shouldPolish(id))
 end
 S.polisherWantsCrates=function()
@@ -3265,15 +3269,19 @@ S.shouldPolish=function(id)
 end
 worker("Polisher",0.35,function()
  S.polisherFinishedWaiting=false
- if not X.polisher and not X.autoSellPolishedCrates then status.Polisher="OFF" return end
+ if not X.polisher and not X.autoSellPolishedCrates and not X.polisherGoldenHourOnly then status.Polisher="OFF" return end
  if not POL.IsUnlocked(P) then status.Polisher="รอปลดล็อก • ขายบอลตามปกติ" return end
  local home=plot() local part
  for _,p in CS:GetTagged("PolisherCollectPart") do if home and p:IsDescendantOf(home) then part=p break end end
  S.polisherAvailable=part~=nil
  if not part then status.Polisher="Polisher unavailable; selling crates normally" return end
  status.Polisher=string.format("รอขัด %.0f • ขัดแล้ว %.0f",POL.GetPendingCash(P),POL.GetPolishedCash(P))
- S.polisherFinishedWaiting=X.autoSellPolishedCrates and (part:GetAttribute("PolishedBallCount") or 0)>0
- if not S.graveOwnsInventory and X.autoSellPolishedCrates and (part:GetAttribute("PolishedBallCount") or 0)>0 and INV.HasInventorySpace(P,1) and ready("polisherCollect",0.5) then R.CollectPolisherCrate:FireServer(part) end
+ local canSellPolished=S.polishedSalesAllowed()
+ if X.polisherGoldenHourOnly and not canSellPolished then
+  status.Polisher="Waiting for Golden Hour • Polished crates held"
+ end
+ S.polisherFinishedWaiting=canSellPolished and (part:GetAttribute("PolishedBallCount") or 0)>0
+ if not S.graveOwnsInventory and canSellPolished and (part:GetAttribute("PolishedBallCount") or 0)>0 and INV.HasInventorySpace(P,1) and ready("polisherCollect",0.5) and S.polishedSalesAllowed() then R.CollectPolisherCrate:FireServer(part) end
  if not X.polisher then return end
  
  local queue={}
@@ -4372,36 +4380,51 @@ local function safeReturn(frame,character,human,root)
  lastSafe={character=character,frame=root.CFrame}
  return true
 end
+-- Shared recovery for every automated route, including graves and respawns.
+-- Only known automatic safety pauses are retryable. Native scenes retain control.
+do
+ local reasons={
+  ["Unsupported or changed character position • Travel stopped"]=true,
+  ["No safe return point; travel paused"]=true,
+ }
+ worker("Travel recovery",0.25,function()
+  if not S.travelSuspended then S.travelRecoveryState=nil return end
+  if not reasons[S.travelSuspendReason] then return end
+  local now=os.clock()
+  local recovery=S.travelRecoveryState
+  if not recovery then
+   recovery={reason=S.travelSuspendReason,at=now,initialCharacter=P.Character} S.travelRecoveryState=recovery
+  end
+  local char=P.Character
+  local root=char and char:FindFirstChild("HumanoidRootPart")
+  local human=char and char:FindFirstChildOfClass("Humanoid")
+  local camera=workspace.CurrentCamera
+  local busy=not root or not human or human.Health<=0 or root.Anchored or human.Sit
+   or S.nativeMenuRequested or S.shopOpen or S.selectingTraining
+   or S.sharedTravelActive or S.tpBusy or S.tpReturnActive or S.trainingTravel
+   or S.obbyTravel or S.halloweenTravel or S.graveTravel or S.graveSceneActive
+   or char and char:FindFirstChild("KnockBodyPosition",true)
+   or camera and camera.CameraType==Enum.CameraType.Scriptable
+  if busy or manualControl() or not safeStanding(root.Position,char,human,root) then
+   recovery.stableAt=nil recovery.position=nil return
+  end
+  if recovery.character~=char or not recovery.position or (recovery.position-root.Position).Magnitude>1 then
+   recovery.character=char recovery.position=root.Position recovery.stableAt=now
+  end
+  if now-(recovery.stableAt or now)<2 then return end
+  -- Three retries in a minute trigger a cooling period, never a permanent latch.
+  local history=S.travelRecoveryHistory or {} S.travelRecoveryHistory=history
+  while history[1] and now-history[1]>=60 do table.remove(history,1) end
+  if #history>=3 then recovery.retryAt=history[1]+60 return end
+  table.insert(history,now)
+  S.lastTravelRecovery={at=now,reason=recovery.reason,respawned=recovery.character~=recovery.initialCharacter}
+  S.travelSuspended=false S.travelSuspendReason=nil S.halloweenRecovery=nil S.travelRecoveryState=nil
+ end)
+end
 S.checkCollectionGround=function(pos)
  local char=P.Character local root=char and char:FindFirstChild("HumanoidRootPart") local human=char and char:FindFirstChildOfClass("Humanoid")
  return root and human and safeStanding(pos,char,human,root) or nil
 end
--- Retry automatically once the character has regained stable ground.
--- Keep the existing route blocks so a failed destination is skipped.
-task.spawn(function()
- while alive() do
-  if S.travelSuspended and S.enabled then
-   local char=P.Character
-   local root=char and char:FindFirstChild("HumanoidRootPart")
-   local human=char and char:FindFirstChildOfClass("Humanoid")
-   local ready=root and human and human.Health>0 and not root.Anchored and not human.Sit
-    and not S.sharedTravelActive and not S.tpReturnActive and not S.trainingTravel
-    and not S.obbyTravel and not S.halloweenTravel and not S.graveTravel
-    and not manualControl() and safeStanding(root.Position,char,human,root)
-   if ready then
-    local sample=S.travelResumeSample
-    if not sample or sample.character~=char or (sample.position-root.Position).Magnitude>1 then
-     S.travelResumeSample={character=char,position=root.Position,at=os.clock()}
-    elseif os.clock()-sample.at>=1 then
-     S.travelSuspended=false S.travelSuspendReason=nil S.halloweenRecovery=nil
-     S.travelResumeSample=nil
-    end
-   else S.travelResumeSample=nil end
-  else S.travelResumeSample=nil end
-  task.wait(0.25)
- end
-end)
-
 -- Shared normal travel for Training, Obby and collection returns.
 -- Recovery from unsupported ground intentionally keeps its immediate safe return.
 do
@@ -4583,9 +4606,14 @@ do
  -- Reserve a house before invoking its native knock, so delayed confirmation
  -- cannot cause a second knock in the same night. Failed routes remain retryable.
  S.chooseHalloweenHouse=function(candidates,done)
-  local selected
+  local selected local selectedBoss=false
   for _,candidate in candidates do
-   if not done[candidate.name] and (not selected or candidate.distance<selected.distance) then selected=candidate end
+   if not done[candidate.name] then
+    local boss=service.IsBossHouse(candidate.name)
+    if not selected or boss and not selectedBoss or boss==selectedBoss and candidate.distance<selected.distance then
+     selected=candidate selectedBoss=boss
+    end
+   end
   end
   return selected
  end
@@ -4777,7 +4805,7 @@ do
   if S.halloweenRespawnPending then
    if char==S.halloweenKnockCharacter or root.Anchored or not safeStanding(root.Position,char,human,root) then state.status="Waiting for safe respawn" return end
    S.halloweenRespawnPending=false S.halloweenSceneActive=false S.halloweenKnockCharacter=nil nextKnock=0
-   if S.halloweenRecovery then S.halloweenRecovery=nil S.travelSuspended=false S.travelSuspendReason=nil end
+   -- Shared recovery verifies stable ground before releasing any safety pause.
    state.status="Respawned • Continuing Halloween queue"
   end
   if S.halloweenSceneActive then state.status="Waiting for native Trick-or-Treat scene" return end
@@ -4823,26 +4851,14 @@ do
   if pickup then state.status="Confirming Candy Bag pickup" return end
   if next(sales) then state.status="Confirming Candy Bag sale before Candy Corn" return end
   if S.travelSuspended then
-   local recovery=S.halloweenRecovery
-   if recovery and type(recovery.route)=="string" and ledger.recoveries<3 and not root.Anchored and not human.Sit and not S.sharedTravelActive and not S.trainingTravel and not S.obbyTravel and safeStanding(root.Position,char,human,root) then
-    if not recovery.position or (recovery.position-root.Position).Magnitude>1 or recovery.character~=char then
-     recovery.position=root.Position recovery.character=char recovery.stableAt=now
-    end
-    if now-(recovery.stableAt or now)>=2 then
-     ledger.recoveries+=1 S.halloweenRecovery=nil S.travelSuspended=false S.travelSuspendReason=nil
-     state.status="Recovered safely • Skipping blocked route and continuing"
-    else state.status="Checking stable ground before continuing Halloween" return end
-   else
-    if recovery then recovery.stableAt=nil recovery.position=nil end
-    state.status=recovery and ledger.recoveries>=3 and "Repeated unsafe routes • Manual Travel review required" or "Candy Bags active • Travel paused; check Travel diagnostics"
-    return
-   end
+   state.status="Travel recovery • Waiting for stable ground / retry cooldown"
+   return
   end
   if S.graveTravel or S.graveSceneActive or S.trainingTravel or S.obbyTravel or S.tpReturnActive or S.sharedTravelActive or S.selectingTraining or S.shopOpen or collect.walking then state.status="Waiting for another trip" return end
   if root.Anchored or human.Sit then state.status="Waiting for character control" return end
   if now>=nextScan and type(filtergc)=="function" then
    nextScan=now+(S.mobileLite and 10 or 5) handlers={}
-   for _,handler in S.cachedHandlerTables({"HouseName","Model","KnockMaid","PlayerAttachment"}) do
+   for _,handler in filtergc("table",{Keys={"HouseName","Model","KnockMaid","PlayerAttachment"}},false) do
     if typeof(handler.Model)=="Instance" and handler.Model:IsDescendantOf(workspace) and type(handler._tryKnock)=="function" then table.insert(handlers,handler) end
    end
   end
@@ -4868,6 +4884,30 @@ do
   end
   state.housesVisited=done state.housesTotal=total
   state.housesSkipped=blocked
+  -- Hold the opening route briefly while the ready Admin House streams in.
+  -- Cooldown / blocked routes never prevent the rest of the night from running.
+  local adminName=require(RS.Shared.Constants).TrickOrTreat.BossHouseName
+  local adminReady=X.halloween and X.halloweenHouses and night and not goalReached
+   and not ledger.confirmed[adminName] and not service.IsHouseOnCooldown(P,adminName)
+   and not ledger.blocked[adminName]
+  if adminReady then
+   local opening=S.adminHouseOpening
+   if not opening or opening.night~=ledger.nightStarted then
+    opening={night=ledger.nightStarted,at=now} S.adminHouseOpening=opening
+    -- Invalidate the shared handler cache for this night's first house scan.
+    handlers={}
+    for _,handler in filtergc("table",{Keys={"HouseName","Model","KnockMaid","PlayerAttachment"}},false) do
+     if typeof(handler.Model)=="Instance" and handler.Model:IsDescendantOf(workspace) and type(handler._tryKnock)=="function" then table.insert(handlers,handler) end
+    end
+    nextScan=0
+   end
+   local present=false
+   for _,candidate in candidates do if candidate.name==adminName then present=true break end end
+   if not present and now-opening.at<10 then
+    state.status="Admin House first • Waiting for a safe door route"
+    return
+   end
+  end
   local target=S.chooseHalloweenHouse(candidates,visited)
   local house=target and target.handler local point=target and target.point
   local knockDelay=house and nativeKnockDelay(house) or 0
@@ -4894,7 +4934,7 @@ do
   end
   -- Once the server cooldown ends, knock the next unvisited door immediately.
   -- During cooldown every landed group is eligible, including the latest house.
-  if house and knockDelay<=0 and not chosenIsGrave then chosen=nil chosenId=nil end
+  if house and knockDelay<=0 and (service.IsBossHouse(house.HouseName) or not chosenIsGrave) then chosen=nil chosenId=nil end
   S.graveCornPending=X.autoGrave and X.graveCollect and pendingPrevious>0
   state.cornTravelReady=chosen~=nil
   state.pendingPreviousCorn=pendingPrevious state.remainingCorn=remainingCorn state.houseSequence=ledger.sequence
@@ -5561,13 +5601,7 @@ task.spawn(function()
  collect.status="Unsafe position; returning immediately"
  routeBlocked[target.key]=os.clock()+S.travelValue("travelUnsafeRetry")
  returnFromTP(false)
- if S.travelSuspended and S.travelSuspendReason=="Unsupported or changed character position • Travel stopped" and (S.collectionRecoveries or 0)<3 and P.Character==character then
-  task.wait(0.5)
-  if alive() and S.enabled and not manualControl() and P.Character==character and human.Health>0 and safeStanding(root.Position,character,human,root) then
-   S.collectionRecoveries=(S.collectionRecoveries or 0)+1 S.travelSuspended=false S.travelSuspendReason=nil
-   collect.status="Returned safely • Skipping failed pickup route"
-  end
- end
+
  end
  if tpTrip==trip and continuing() and os.clock()>=requestAt and (root.Position-target.pos).Magnitude<=S.travelValue("travelRange") then
  requestAt=os.clock()+S.travelValue("pickupRetry")
@@ -5726,7 +5760,7 @@ task.spawn(function()
  current("Fast Open",X.fastOpen,G.BlueFarmInstant and G.BlueFarmInstant.status)
  current("Crate Sales",X.autoSellCrates,S.ballCollectStatus)
  current("Polisher",X.polisher,status.Polisher)
- current("Polished Crate Sales",X.autoSellPolishedCrates,S.ballSales and ("Confirmed: "..S.ballSales.polished))
+ current("Polished Crate Sales",X.autoSellPolishedCrates or X.polisherGoldenHourOnly,S.ballSales and ("Confirmed: "..S.ballSales.polished))
  current("Auto Grave",X.autoGrave,S.grave and S.grave.status)
  current("Potions",X.luckPotion or X.cashPotion or X.speedPotion or X.bluetooth,status.Potions)
  current("Market",X.market,status.Market)
@@ -5894,39 +5928,67 @@ handlerClass._playOpenAnimation=function(self,...)
 end
 task.spawn(function()
  local cache={}
- local refreshed=0
+ local refreshed=-math.huge
  local inFlight=setmetatable({},{__mode="k"})
+ local retry=setmetatable({},{__mode="k"})
+ local function enabled()
+  return state.running and S.running and env.BlueFarm==S and gui.Parent~=nil and S.enabled and X.fastOpen and not S.graveOwnsInventory
+ end
+ state.attempts=0 state.unconfirmed=0 state.inFlight=0
  while state.running and S.running and gui.Parent do
- local farm=env.BlueFarm
- if X.fastOpen and farm and farm.running and farm.enabled and not S.graveOwnsInventory then
+ if enabled() then
  local ok,err=pcall(function()
  local plot=workspace.Map.PlotModels:FindFirstChild(player.Name)
- if not plot then return end
- if os.clock()-refreshed>=1 then
- refreshed=os.clock()
- cache={}
- for _,handler in S.cachedHandlerTables({"Part","Attachments","Callbacks"}) do
- if typeof(handler.Part)=="Instance" and handler.Part:IsDescendantOf(plot) and type(handler.OpenBox)=="function" and not handler._destroyed then
- cache[handler.Part]=handler
- end end
+ if not plot then state.status="Waiting for own plot" return end
+ if os.clock()-refreshed>=(S.mobileLite and 2 or 1) then
+  -- New handlers must not wait for the shared 60/120-second GC cache.
+  local nextCache={}
+  for _,handler in filtergc("table",{Keys={"Part","Attachments","Callbacks"}},false) do
+   if typeof(handler.Part)=="Instance" and handler.Part:IsDescendantOf(plot) and type(handler.OpenBox)=="function" and not handler._destroyed then
+    nextCache[handler.Part]=handler
+   end
+  end
+  cache=nextCache refreshed=os.clock()
  end
+ local waiting=0 local found=0
  for part,handler in cache do
- if part.Parent and part:GetAttribute("Type")=="Box" and not handler._destroyed and not handler._opening and not inFlight[handler] then
- if boxService.IsBoxReady(part:GetAttribute("BoxName"),part:GetAttribute("PlacedAt"),part:GetAttribute("Variant")) then
- inFlight[handler]=true
- task.spawn(function()
- local success,openError=pcall(function() handler:OpenBox() end)
- if success then
- if part:GetAttribute("Type")~="Box" then state.opened+=1 S.opened+=1 state.status="Opened ready locker without reveal animation" end
- else state.errors+=1 state.lastError=tostring(openError) end
- inFlight[handler]=nil
- end)
- end end
+ if part:IsDescendantOf(plot) and part:GetAttribute("Type")=="Box" and not handler._destroyed then
+  found+=1
+  if not handler._opening and not inFlight[handler] and os.clock()>=(retry[part] or 0) then
+   if boxService.IsBoxReady(part:GetAttribute("BoxName"),part:GetAttribute("PlacedAt"),part:GetAttribute("Variant")) then
+    inFlight[handler]=true state.inFlight+=1
+    local box=part:GetAttribute("BoxName") local placed=part:GetAttribute("PlacedAt")
+    task.spawn(function()
+     local attempted=false
+     local success,openError=pcall(function()
+      if not enabled() or handler._destroyed or not part:IsDescendantOf(plot) or part:GetAttribute("Type")~="Box" or part:GetAttribute("PlacedAt")~=placed then return end
+      attempted=true state.attempts+=1
+      handler:OpenBox()
+      local deadline=os.clock()+2
+      repeat
+       if not state.running or not S.running then return end
+       if not part:IsDescendantOf(plot) or part:GetAttribute("Type")~="Box" or part:GetAttribute("BoxName")~=box or part:GetAttribute("PlacedAt")~=placed then
+        state.opened+=1 S.opened+=1 state.status="Locker state changed after open request" return
+       end
+       task.wait(0.05)
+      until os.clock()>=deadline
+      state.unconfirmed+=1 state.status="Open not confirmed • Waiting before retry"
+     end)
+     if not success then state.errors+=1 state.lastError=tostring(openError) state.status="Open error: "..tostring(openError) end
+     if attempted then retry[part]=os.clock()+(success and 1 or 3) end
+     inFlight[handler]=nil state.inFlight=math.max(0,state.inFlight-1)
+    end)
+   else waiting+=1 end
+  end
  end
- end)
- if not ok then state.errors+=1 state.lastError=tostring(err) end
  end
- task.wait(0.05)
+ state.lockers=found state.waitingTimers=waiting
+ if state.inFlight==0 and found==0 then state.status="No placed lockers detected"
+ elseif state.inFlight==0 and waiting==found then state.status="Waiting for server unlock timers" end
+ end)
+ if not ok then state.errors+=1 state.lastError=tostring(err) state.status="Scan error: "..tostring(err) end
+ else state.status=not X.fastOpen and "OFF" or not S.enabled and "PAUSED" or "Waiting for inventory task" end
+ task.wait(0.1)
  end
 end)
 end
@@ -7790,9 +7852,9 @@ for _,name in ipairs({'TP','Tween'}) do
  for _,signal in ipairs({button.Activated,button.MouseButton1Click}) do for _,c in ipairs(getconnections(signal)) do c:Disconnect() end end
  -- Start on press, so touch and mouse both respond before release.
  button.InputBegan:Connect(function(input)
-  if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then S.selectTravelMode(name) refresh() end
+  if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then S.options.collectMode=name refresh() end
  end)
- button.Activated:Connect(function() S.selectTravelMode(name) refresh() end)
+ button.Activated:Connect(function() S.options.collectMode=name refresh() end)
 end
 refresh()
 u.instantTravelMode=true
